@@ -1,0 +1,233 @@
+########## Querys Tablero ##########
+
+# Subscribers -------------------------------------------------------
+
+WITH a AS (
+
+    SELECT DISTINCT p.email, p.subscription_id, e.user_id, DATE_TRUNC(p.payment_date, MONTH) AS payment_date, p.subscription_number, 
+    FROM `praxis-effort-422420-n0.prueba_platzi.payments` AS p
+        LEFT JOIN `praxis-effort-422420-n0.prueba_platzi.engagement` AS e ON p.subscription_id = e.subscription_id
+    WHERE TRUE
+        AND email IS NOT NULL
+        AND user_id IS NOT NULL
+    ORDER BY e.user_id, payment_date DESC
+
+)
+
+SELECT 
+    a.payment_date AS fecha_primer_subscripcion, 
+    COUNT(distinct a.subscription_id) AS usuarios_activos, 
+    COUNTIF(subscription_number = 1) AS usarios_nuevos,
+    COUNTIF(subscription_number = 1)/COUNT(distinct a.user_id) AS pct_us_nuevos
+from a
+WHERE TRUE
+group by 1
+ORDER BY 1 desc
+
+
+# Retention Rate -------------------------------------------------------
+/*
+
+    Tasa de Retención:
+  
+        (Clientes al final del periodo - Clientes nuevos durante el periodo) / Clientes al comienzo del periodo
+
+        - Clientes al final del periodo: Clientes que pagaron la suscripción en marzo 2024
+        - Clientes nuevos: Clientes cuyo numero de suscripción es 1 en el primer trimestre de 2024
+        - Clientes al comienzo del periodo: Clientes que pagaron la subscripción en diciembre 2023
+
+*/
+
+WITH clientes_final AS (
+
+    SELECT DATE_TRUNC(payment_date, MONTH) AS mes_activacion, COUNT(DISTINCT subscription_id) AS cantidad_activaciones
+    FROM `praxis-effort-422420-n0.prueba_platzi.payments`
+    GROUP BY 1
+    ORDER BY 1 DESC
+
+)
+
+
+SELECT 
+    base.trimestre,
+    base.cantidad_activaciones_nuevas AS act_nuevas,
+    DATE_SUB(base.trimestre, INTERVAL 1 MONTH) AS init,
+    cf_init.cantidad_activaciones AS act_inicio,
+    DATE_ADD(base.trimestre, INTERVAL 2 MONTH) AS ended,
+    cf_end.cantidad_activaciones AS act_fin,
+    (cf_end.cantidad_activaciones - base.cantidad_activaciones_nuevas) /  cf_init.cantidad_activaciones AS
+    retention_rate 
+FROM (
+    SELECT 
+        DATE_TRUNC(p.payment_date, QUARTER) AS trimestre, 
+        COUNT(DISTINCT p.subscription_id) AS cantidad_activaciones_nuevas
+    FROM `praxis-effort-422420-n0.prueba_platzi.payments` AS p
+    WHERE TRUE
+        AND p.subscription_number = 1
+    GROUP BY 1
+    ORDER BY 1 DESC
+    ) AS base
+    LEFT JOIN clientes_final AS cf_init ON DATE_SUB(base.trimestre, INTERVAL 1 MONTH) = cf_init.mes_activacion
+    LEFT JOIN clientes_final AS cf_end ON DATE_ADD(base.trimestre, INTERVAL 2 MONTH) = cf_end.mes_activacion
+ORDER BY 1 DESC
+
+
+# Cohort Analysis Level -------------------------------------------------------
+
+WITH a AS (
+
+    SELECT DISTINCT 
+        p.email, 
+        p.subscription_id, 
+        e.user_id, 
+        DATE_TRUNC(p.payment_date, MONTH) AS payment_date, 
+        p.subscription_number
+    FROM `praxis-effort-422420-n0.prueba_platzi.payments` AS p
+        LEFT JOIN `praxis-effort-422420-n0.prueba_platzi.engagement` AS e ON p.subscription_id = e.subscription_id
+    WHERE TRUE
+        AND email IS NOT NULL
+        AND user_id IS NOT NULL
+    ORDER BY e.user_id, payment_date DESC
+
+), fin_ AS (
+
+    SELECT 
+        a.user_id, 
+        a.payment_date AS fecha_primer_subscripcion, 
+        a1.fecha_renovacion,
+        CASE
+            WHEN DATE_DIFF(a1.fecha_renovacion, a.payment_date, MONTH) = 0 THEN 0
+            ELSE DATE_DIFF(a1.fecha_renovacion, a.payment_date, MONTH)
+        END AS mes_renovacion
+    FROM a
+        LEFT JOIN (
+            SELECT user_id, payment_date AS fecha_renovacion
+            FROM a  
+        ) AS a1 ON a.user_id = a1.user_id 
+    WHERE TRUE
+        AND subscription_number = 1
+    ORDER BY 1, 2 DESC, 3 ASC
+
+)
+
+SELECT *
+FROM fin_
+
+
+# Cohort Analysis Percentage -------------------------------------------------------
+
+WITH a AS (
+
+    SELECT DISTINCT 
+        p.email, 
+        p.subscription_id, 
+        e.user_id, 
+        DATE_TRUNC(p.payment_date, MONTH) AS payment_date, 
+        p.subscription_number
+    FROM `praxis-effort-422420-n0.prueba_platzi.payments` AS p
+        LEFT JOIN `praxis-effort-422420-n0.prueba_platzi.engagement` AS e ON p.subscription_id = e.subscription_id
+    WHERE TRUE
+        AND email IS NOT NULL
+        AND user_id IS NOT NULL
+    ORDER BY e.user_id, payment_date DESC
+
+), fin_ AS (
+
+    SELECT 
+        a.user_id, 
+        a.payment_date AS fecha_primer_subscripcion, 
+        a1.fecha_renovacion,
+        CASE
+            WHEN DATE_DIFF(a1.fecha_renovacion, a.payment_date, MONTH) = 0 THEN 0
+            ELSE DATE_DIFF(a1.fecha_renovacion, a.payment_date, MONTH)
+        END AS mes_renovacion
+    FROM a
+        LEFT JOIN (
+            SELECT user_id, payment_date AS fecha_renovacion
+            FROM a  
+        ) AS a1 ON a.user_id = a1.user_id 
+    WHERE TRUE
+        AND subscription_number = 1
+    ORDER BY 1, 2 DESC, 3 ASC
+
+)
+
+
+
+
+SELECT base.fecha_primer_subscripcion, mes_renovacion, total_1/total_2 AS retention_rate
+FROM (
+    SELECT fecha_primer_subscripcion, mes_renovacion, COUNT(DISTINCT user_id) AS total_1
+    FROM fin_
+    GROUP BY 1, 2
+    ) AS base
+    LEFT JOIN (
+        SELECT fecha_primer_subscripcion, COUNT(DISTINCT user_id) AS total_2
+        FROM fin_
+        GROUP BY 1
+    ) AS a1 ON base.fecha_primer_subscripcion = a1.fecha_primer_subscripcion
+
+
+
+########## Query Análisis de Modelado de Datos ##########
+
+WITH preferences AS (
+
+    SELECT 
+        user_id, 
+        APPROX_QUANTILES(active_days, 2)[OFFSET(1)] AS med_active_days,
+        AVG(active_days) AS avg_active_days,
+        APPROX_QUANTILES(courses_seen, 2)[OFFSET(1)] AS med_courses_seen,
+        AVG(courses_seen) AS avg_courses_seen,
+        APPROX_QUANTILES(materials_seen, 2)[OFFSET(1)] AS med_materials_seen,
+        AVG(materials_seen) AS avg_materials_seen,
+        APPROX_TOP_COUNT(IF(favorite_category='N/A', NULL, favorite_category), 1)[OFFSET(0)][OFFSET(0)] AS favorite_category
+    FROM (
+        SELECT DISTINCT e.*
+        FROM `praxis-effort-422420-n0.prueba_platzi.engagement` AS e
+        ORDER BY user_id
+    )
+    WHERE user_id IS NOT NULL
+    GROUP BY 1
+
+), subscriptions AS (
+
+    SELECT DISTINCT 
+        e.user_id, 
+        p.subscription_number
+    FROM `praxis-effort-422420-n0.prueba_platzi.payments` AS p
+        LEFT JOIN `praxis-effort-422420-n0.prueba_platzi.engagement` AS e ON p.subscription_id = e.subscription_id
+    WHERE TRUE
+        AND user_id IS NOT NULL
+    QUALIFY ROW_NUMBER() OVER(PARTITION BY user_id ORDER BY subscription_number DESC) = 1
+
+), demography AS (
+
+    SELECT DISTINCT 
+        user_id, 
+        age,
+        CASE 
+            WHEN user_id IN (
+                SELECT user_id
+                FROM `praxis-effort-422420-n0.prueba_platzi.users`
+                GROUP BY 1
+                HAVING COUNT(DISTINCT is_working) > 1   
+            ) THEN NULL
+            WHEN is_working THEN 1
+            ELSE 0
+        END AS is_working
+    FROM `praxis-effort-422420-n0.prueba_platzi.users`
+    WHERE TRUE
+        AND user_id IS NOT NULL
+
+)
+
+
+SELECT 
+    p.*,
+    s.subscription_number,
+    IF(s.subscription_number > 1, 1, 0) AS renewed,
+    d.* EXCEPT(user_id)
+FROM preferences AS p
+    LEFT JOIN subscriptions AS s ON p.user_id = s.user_id
+    LEFT JOIN demography AS d ON d.user_id = s.user_id
